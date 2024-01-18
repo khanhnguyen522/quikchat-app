@@ -71,8 +71,8 @@ const OneToOneChat = () => {
     pic: otherUserInfo?.pic,
   };
   if (otherUserInfo === undefined) {
-    otherUser.pic = user.pic;
-    otherUser.name = user.name;
+    otherUser.pic = user?.pic;
+    otherUser.name = user?.name;
   }
 
   const handleSendMessage = async () => {
@@ -130,7 +130,7 @@ const OneToOneChat = () => {
           >
             <img src={otherUser?.pic} className="w-10 h-10 rounded-full" />
 
-            <div className="font-[500]">{otherUser.name}</div>
+            <div className="font-[500]">{otherUser?.name}</div>
           </Link>
         </div>
       </div>
@@ -164,14 +164,14 @@ const OneToOneChat = () => {
                   : "justify-start"
               } items-center space-x-2 my-1`}
             >
-              {message.sender._id === otherUser.id && (
+              {message.sender._id === otherUser?.id && (
                 <div className="flex  max-w-[50%]">
                   {!isOtherUserLastSender(allMessages[0], idx, idx - 1) ? (
                     <div className="flex space-x-1 items-center">
                       <img
-                        src={otherUser.pic}
+                        src={otherUser?.pic}
                         className="w-6 h-6 rounded-full"
-                        alt={otherUser.name}
+                        alt={otherUser?.name}
                       />
                       <div
                         className="p-2 rounded-3xl px-3 w-[100%]

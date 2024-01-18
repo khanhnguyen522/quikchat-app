@@ -37,7 +37,7 @@ const Chatpage = () => {
     if (!user) {
       navigate("/");
     }
-  }, []);
+  }, [chats]);
 
   const [search, setSearch] = useState(false);
   const chatsTabs = [

@@ -45,7 +45,7 @@ const GroupChat = () => {
     } catch (err) {
       console.log(err);
     }
-  }, [user]);
+  }, [user, allMessages]);
 
   useEffect(() => setMessages(allMessages));
 

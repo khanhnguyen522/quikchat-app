@@ -7,6 +7,9 @@ import CreateGroup from "./screens/CreateGroup";
 import Chat from "./screens/Chat";
 import ChatInfo from "./screens/ChatInfo";
 import "./index.css";
+import socketIO from "socket.io-client";
+
+const socket = socketIO.connect("http://localhost:8000");
 
 function App() {
   return (
@@ -18,7 +21,7 @@ function App() {
           <Route path="profile" index element={<Profile />} />
           <Route path="profile/edit" index element={<EditProfile />} />
           <Route path="creategroup" element={<CreateGroup />} />
-          <Route path="chats/:id" element={<Chat />} />
+          <Route path="chats/:id" element={<Chat socket={socket} />} />
           <Route path="chats/:id/info" element={<ChatInfo />} />
         </Route>
       </Routes>
