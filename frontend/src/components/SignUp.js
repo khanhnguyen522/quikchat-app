@@ -63,6 +63,7 @@ const SignUp = () => {
             className="rounded-md h-8 border border-1"
             id="password"
             value={password}
+            type="password"
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
@@ -75,6 +76,7 @@ const SignUp = () => {
             className="rounded-md h-8 border border-1"
             id="confirmPassword"
             value={confirmPassword}
+            type="password"
             onChange={(e) => setConfirmedPassword(e.target.value)}
           />
         </div>
