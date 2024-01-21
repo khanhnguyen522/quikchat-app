@@ -45,6 +45,7 @@ const Login = () => {
             className="rounded-md h-8 border border-1"
             id="password"
             value={password}
+            type="password"
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
