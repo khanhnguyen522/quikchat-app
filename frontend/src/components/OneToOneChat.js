@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import { AiOutlineArrowLeft } from "react-icons/ai";
 import { FaLocationArrow } from "react-icons/fa";
@@ -7,7 +7,13 @@ import { FaLocationArrow } from "react-icons/fa";
 import { createAxios } from "../createInstance";
 import { loginSuccess } from "../redux/user/userSlice";
 import { fetchChatById } from "../redux/chat/chatApiRequest";
-import { setLatestMessageAndBump } from "../redux/chat/chatSlice";
+import {
+  setLatestMessageAndBump,
+  removeChatById,
+  setViewedAt as setViewedAtRedux,
+  resetUnread,
+  incrementUnread, // NEW: for other chats while you’re inside this one
+} from "../redux/chat/chatSlice";
 import {
   getAllMessages,
   sendMessage,
@@ -18,8 +24,12 @@ import {
 } from "../redux/message/messageSlice";
 import { getSocket } from "../lib/socket";
 
+const nowISO = () => new Date().toISOString();
+const viewedKey = (id) => `viewedAt:${id}`;
+
 const OneToOneChat = () => {
   const { id: chatId } = useParams();
+  const navigate = useNavigate();
   const dispatch = useDispatch();
 
   const user = useSelector((s) => s.user?.login.currentUser);
@@ -35,51 +45,138 @@ const OneToOneChat = () => {
   const [isSending, setIsSending] = useState(false);
   const [optimistic, setOptimistic] = useState([]);
 
-  // helper: avoid duplicate inserts when socket echoes back
   const hasMsg = (id) =>
     !!serverList.find((m) => String(m?._id) === String(id));
 
-  // socket: join room + receive
+  // capture the last viewedAt BEFORE we update it (used for divider)
+  const prevViewedRef = useRef(null);
+
+  // if you don't belong here anymore, bounce
+  useEffect(() => {
+    if (!thisChat || !user?._id) return;
+    const inChat = (thisChat.users || []).some(
+      (u) => String(u?._id) === String(user._id)
+    );
+    if (!inChat) {
+      dispatch(removeChatById(chatId));
+      navigate("/chats");
+    }
+  }, [thisChat, user?._id, chatId, dispatch, navigate]);
+
+  // socket: join room + receive (covers this chat AND other chats)
   useEffect(() => {
     if (!user?.accessToken || !chatId) return;
     const socket = getSocket(user.accessToken);
 
+    if (user?._id) socket.emit("user:join", { userId: String(user._id) });
     socket.emit("chat:join", { chatId });
 
     const handleNewMessage = (msg) => {
-      // ignore if not this thread
-      if (String(msg?.chat?._id) !== String(chatId)) return;
-      if (msg?._id && hasMsg(msg._id)) return;
+      const incomingChatId = String(msg?.chat?._id || "");
+      if (!incomingChatId) return;
 
-      // push into thread
-      dispatch(addMessageToThread({ chatId: msg.chat._id, message: msg }));
-      // bump chat list
+      const isMine = String(msg?.sender?._id || "") === String(user?._id || "");
+
+      if (incomingChatId === String(chatId)) {
+        // message for THIS chat
+        if (msg?._id && hasMsg(msg._id)) return;
+        dispatch(addMessageToThread({ chatId: msg.chat._id, message: msg }));
+        dispatch(
+          setLatestMessageAndBump({
+            chatId: msg.chat._id,
+            message: msg,
+            updatedAt: msg.createdAt,
+          })
+        );
+        return;
+      }
+
+      // message belongs to ANOTHER chat (you’re currently inside this one)
+      // ensure that other chat exists locally; if not, fetch once
+      const exists = (chats || []).some(
+        (c) => String(c._id) === incomingChatId
+      );
+      if (!exists) {
+        fetchChatById(incomingChatId, dispatch, user.accessToken, axiosJWT);
+      }
+
+      // increment unread for that other chat if it isn't your own message
+      if (!isMine) {
+        dispatch(incrementUnread(incomingChatId));
+      }
+
+      // keep list’s preview/order fresh
       dispatch(
         setLatestMessageAndBump({
-          chatId: msg.chat._id,
+          chatId: incomingChatId,
           message: msg,
           updatedAt: msg.createdAt,
         })
       );
     };
 
+    const handleChatRemoved = ({ chatId: removedId }) => {
+      if (String(removedId) !== String(chatId)) return;
+      socket.emit("chat:leave", { chatId });
+      dispatch(removeChatById(chatId));
+      navigate("/chats");
+    };
+
     socket.on("message:new", handleNewMessage);
+    socket.on("chat:removed", handleChatRemoved);
 
     return () => {
       socket.emit("chat:leave", { chatId });
       socket.off("message:new", handleNewMessage);
+      socket.off("chat:removed", handleChatRemoved);
     };
-    // only re-bind when chatId/token change
-  }, [chatId, user?.accessToken, dispatch]);
+  }, [
+    chatId,
+    user?.accessToken,
+    user?._id,
+    chats,
+    dispatch,
+    navigate,
+    axiosJWT,
+  ]);
 
-  // fetch on entry
+  // fetch on entry + manage viewedAt & unread reset
   useEffect(() => {
     if (!chatId || !user?.accessToken) return;
+
+    // capture previous viewedAt before overwriting it (for divider)
+    const prev = localStorage.getItem(viewedKey(chatId));
+    prevViewedRef.current = prev ? new Date(prev).toISOString() : null;
+
+    // mark viewed NOW (so unread resets immediately when you open the chat)
+    const at = nowISO();
+    localStorage.setItem(viewedKey(chatId), at);
+    dispatch(setViewedAtRedux({ chatId, at }));
+    dispatch(resetUnread(chatId));
+
     dispatch(setActiveChat(chatId));
+
     if (!thisChat) {
-      fetchChatById(chatId, dispatch, user.accessToken, axiosJWT);
+      fetchChatById(chatId, dispatch, user.accessToken, axiosJWT).catch(
+        (err) => {
+          const status = err?.response?.status;
+          if (status === 403 || status === 404) {
+            dispatch(removeChatById(chatId));
+            navigate("/chats");
+          }
+        }
+      );
     }
-    getAllMessages(chatId, dispatch, user.accessToken, axiosJWT);
+
+    getAllMessages(chatId, dispatch, user.accessToken, axiosJWT).catch(
+      (err) => {
+        const status = err?.response?.status;
+        if (status === 403 || status === 404) {
+          dispatch(removeChatById(chatId));
+          navigate("/chats");
+        }
+      }
+    );
   }, [chatId, user?.accessToken]); // eslint-disable-line
 
   // merge optimistic + server
@@ -115,6 +212,16 @@ const OneToOneChat = () => {
       "https://icon-library.com/images/anonymous-avatar-icon/anonymous-avatar-icon-25.jpg",
   };
 
+  // divider (first incoming after prev viewed)
+  const prevViewedAtMs = prevViewedRef.current
+    ? new Date(prevViewedRef.current).getTime()
+    : 0;
+  const dividerIndex = messageList.findIndex((m) => {
+    const t = new Date(m.createdAt || 0).getTime();
+    const senderId = String(m?.sender?._id || "");
+    return senderId !== myId && t > prevViewedAtMs;
+  });
+
   // scroll
   const messageEndRef = useRef(null);
   useEffect(() => {
@@ -130,7 +237,7 @@ const OneToOneChat = () => {
     setNewMessage("");
 
     const clientId = "c_" + Date.now();
-    const createdAt = new Date().toISOString();
+    const createdAt = nowISO();
     const temp = {
       clientId,
       content,
@@ -139,6 +246,11 @@ const OneToOneChat = () => {
       createdAt,
       __optimistic: true,
     };
+
+    // mark as viewed immediately so my message isn't "new"
+    localStorage.setItem(viewedKey(chatId), createdAt);
+    dispatch(setViewedAtRedux({ chatId, at: createdAt }));
+    dispatch(resetUnread(chatId)); // keep badge at 0 while you type
 
     setOptimistic((p) => [...p, temp]);
     dispatch(
@@ -150,19 +262,16 @@ const OneToOneChat = () => {
     );
 
     try {
-      // save to server (returns real message with _id)
       const saved = await sendMessage(
         { content, chatId },
-        undefined, // dispatch is internal to API call now
+        undefined,
         user.accessToken,
         axiosJWT
       );
 
-      // remove optimistic
       setOptimistic((p) => p.filter((m) => m.clientId !== clientId));
 
       if (saved) {
-        // bump (thread insert is done in the API via sendMessageSuccess)
         dispatch(
           setLatestMessageAndBump({
             chatId,
@@ -173,7 +282,7 @@ const OneToOneChat = () => {
       }
     } catch (e) {
       setOptimistic((p) => p.filter((m) => m.clientId !== clientId));
-      setNewMessage(content); // rollback input
+      setNewMessage(content);
       console.log(e);
     } finally {
       setIsSending(false);
@@ -238,57 +347,55 @@ const OneToOneChat = () => {
         {messageList.map((m, idx) => {
           const senderId = String(m?.sender?._id || "");
           const isMine = senderId === myId;
-          const isOther = senderId === otherUser.id;
-
           const prevSenderId = String(
             messageList?.[idx - 1]?.sender?._id || ""
           );
-          const isOtherPrevSame = idx > 0 && prevSenderId === senderId;
+          const isPrevSame = idx > 0 && prevSenderId === senderId;
 
           return (
-            <div
-              key={m._id || m.clientId}
-              className={`flex ${
-                isMine ? "justify-end" : "justify-start"
-              } items-center space-x-2 my-1`}
-            >
-              {isOther && (
-                <div className="flex max-w-[50%]">
-                  {!isOtherPrevSame ? (
-                    <div className="flex space-x-1 items-center">
-                      <img
-                        src={otherUser.pic}
-                        className="w-6 h-6 rounded-full"
-                        alt={otherUser.name}
-                      />
-                      <div className="p-2 rounded-3xl px-3 w-[100%] bg-gray-200 text-black text-sm whitespace-normal">
+            <React.Fragment key={m._id || m.clientId}>
+              {dividerIndex >= 0 && idx === dividerIndex && (
+                <div className="w-full flex justify-center my-2">
+                  <span className="text-xs px-2 py-1 rounded-full bg-[#e9ecee] text-gray-600">
+                    New messages
+                  </span>
+                </div>
+              )}
+              <div
+                className={`flex ${
+                  isMine ? "justify-end" : "justify-start"
+                } items-center space-x-2 my-1`}
+              >
+                {!isMine && (
+                  <div className="flex max-w-[50%]">
+                    {!isPrevSame ? (
+                      <div className="flex space-x-1 items-center">
+                        <img
+                          src={otherUser.pic}
+                          className="w-6 h-6 rounded-full"
+                          alt={otherUser.name}
+                        />
+                        <div className="p-2 rounded-3xl px-3 w-[100%] bg-gray-200 text-black text-sm whitespace-normal">
+                          {m?.content}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-2 ml-7 rounded-3xl px-3 w-[100%] bg-gray-200 text-black text-sm whitespace-normal">
                         {m?.content}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="p-2 ml-7 rounded-3xl px-3 w-[100%] bg-gray-200 text-black text-sm whitespace-normal">
+                    )}
+                  </div>
+                )}
+
+                {isMine && (
+                  <div className="flex max-w-[50%]">
+                    <div className="p-2 rounded-3xl px-3 w-[100%] bg-[rgb(134,122,245)] text-white self-end text-sm whitespace-normal">
                       {m?.content}
                     </div>
-                  )}
-                </div>
-              )}
-
-              {isMine && (
-                <div className="flex max-w-[50%]">
-                  <div className="p-2 rounded-3xl px-3 w-[100%] bg-[rgb(134,122,245)] text-white self-end text-sm whitespace-normal">
-                    {m?.content}
                   </div>
-                </div>
-              )}
-
-              {!isMine && !isOther && (
-                <div className="flex max-w-[50%]">
-                  <div className="p-2 rounded-3xl px-3 w-[100%] bg-gray-100 text-black/80 text-sm whitespace-normal border border-gray-200">
-                    {m?.content}
-                  </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            </React.Fragment>
           );
         })}
         <div ref={messageEndRef} />

@@ -1,63 +1,114 @@
 import { createSlice } from "@reduxjs/toolkit";
 
+/** ------- helpers ------- */
+const toId = (x) => String(x?._id ?? x?.id ?? x ?? "");
+const getTime = (c) =>
+  new Date(c?.latestMessage?.createdAt || c?.updatedAt || 0).getTime();
+
+const sortByRecencyDesc = (arr) => arr.sort((a, b) => getTime(b) - getTime(a));
+
+const sanitizeChat = (chat) => {
+  // ensure updatedAt so new chats sort correctly even w/o latestMessage
+  if (!chat?.updatedAt && chat?.latestMessage?.createdAt) {
+    return { ...chat, updatedAt: chat.latestMessage.createdAt };
+  }
+  if (!chat?.updatedAt) {
+    return { ...chat, updatedAt: new Date().toISOString() };
+  }
+  return chat;
+};
+
 const upsertChat = (state, chat) => {
-  if (!state.fetch.allChats) {
-    state.fetch.allChats = [chat];
+  const list = state.fetch.allChats;
+  const incoming = sanitizeChat(chat);
+
+  if (!Array.isArray(list) || !list.length) {
+    state.fetch.allChats = [incoming];
     return;
   }
 
-  const idx = state.fetch.allChats.findIndex((c) => c._id == chat._id);
+  const id = toId(incoming);
+  const idx = list.findIndex((c) => toId(c) === id);
   if (idx >= 0) {
-    state.fetch.allChats[idx] = { ...state.fetch.allChats[idx], ...chat };
-    state.fetch.allChats.sort(
-      (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
-    );
+    const existing = list[idx];
+    const newer =
+      getTime(incoming) >= getTime(existing)
+        ? { ...existing, ...incoming }
+        : existing;
+    list[idx] = newer;
   } else {
-    state.fetch.allChats.unshift(chat);
+    list.unshift(incoming);
   }
+
+  sortByRecencyDesc(list);
 };
 
-const newerChat = (a, b) => {
-  // pick the one with newer updatedAt / latestMessage.createdAt
-  const aUpdated = a?.updatedAt || a?.latestMessage?.createdAt || 0;
-  const bUpdated = b?.updatedAt || b?.latestMessage?.createdAt || 0;
-  return new Date(aUpdated) > new Date(bUpdated) ? a : b;
-};
+const newerChat = (a, b) => (getTime(a) >= getTime(b) ? a : b);
 
+/** ------- initial state ------- */
 const initialState = {
-  access: {
-    chat: null,
-    isFetching: false,
-    error: false,
-  },
-  fetch: {
-    allChats: null,
-    isFetching: true,
-    error: false,
-  },
-  group: {
-    currGroup: null,
-    isFetching: false,
-    error: false,
-  },
-  remove: {
-    isFetching: false,
-    error: false,
-  },
-  add: {
-    isFetching: false,
-    error: false,
-  },
+  access: { chat: null, isFetching: false, error: false },
+  fetch: { allChats: [], isFetching: false, error: false },
+  group: { currGroup: null, isFetching: false, error: false },
+  remove: { isFetching: false, error: false },
+  add: { isFetching: false, error: false },
   getById: { isFetching: false, error: false },
+  viewedAt: {}, // optional last viewed timestamps
+  unreadCounts: {}, // NEW: chatId -> integer
 };
 
+/** ------- slice ------- */
 export const chatSlice = createSlice({
   name: "chat",
   initialState,
   reducers: {
+    /** handy public upsert for socket "chat:created"/"chat:updated" usage */
+    addOrUpdateChat: (s, a) => {
+      upsertChat(s, a.payload);
+    },
+
+    /** remove (e.g., kicked or chat deleted) */
+    removeChatById: (s, a) => {
+      const chatId = String(a.payload);
+      s.fetch.allChats = (s.fetch.allChats || []).filter(
+        (c) => toId(c) !== chatId
+      );
+      if (s.access.chat && toId(s.access.chat) === chatId) {
+        s.access.chat = null;
+      }
+      if (s.group.currGroup && toId(s.group.currGroup) === chatId) {
+        s.group.currGroup = null;
+      }
+      delete s.viewedAt?.[chatId];
+      delete s.unreadCounts?.[chatId];
+    },
+
+    // track last viewed time (used for divider/unread if you want)
+    setViewedAt: (s, { payload }) => {
+      const { chatId, at } = payload;
+      s.viewedAt = s.viewedAt || {};
+      s.viewedAt[String(chatId)] = at || new Date().toISOString();
+    },
+
+    // NEW: unread counters
+    incrementUnread: (s, { payload }) => {
+      const chatId = String(payload);
+      const curr = s.unreadCounts?.[chatId] ?? 0;
+      s.unreadCounts[chatId] = curr + 1;
+    },
+    resetUnread: (s, { payload }) => {
+      const chatId = String(payload);
+      s.unreadCounts[chatId] = 0;
+    },
+    setUnreadCount: (s, { payload }) => {
+      const { chatId, count } = payload || {};
+      s.unreadCounts[String(chatId)] = Math.max(0, Number(count) || 0);
+    },
+
     // access
     accessStart: (s) => {
       s.access.isFetching = true;
+      s.access.error = false;
     },
     accessSuccess: (s, a) => {
       s.access.isFetching = false;
@@ -72,32 +123,25 @@ export const chatSlice = createSlice({
     // list
     fetchStart: (s) => {
       s.fetch.isFetching = true;
+      s.fetch.error = false;
     },
     fetchSuccess: (s, a) => {
-      const incoming = Array.isArray(a.payload) ? a.payload : [];
-      if (!s.fetch.allChats || !s.fetch.allChats.length) {
+      const incomingList = Array.isArray(a.payload) ? a.payload : [];
+      if (!s.fetch.allChats.length) {
         s.fetch.isFetching = false;
-        s.fetch.allChats = incoming;
+        s.fetch.allChats = sortByRecencyDesc(incomingList.map(sanitizeChat));
         return;
       }
-
-      // Build a map of current chats
-      const map = new Map(s.fetch.allChats.map((c) => [c._id, c]));
-
-      // Merge: if incoming has a chat, keep whichever is newer
-      for (const chat of incoming) {
-        const existing = map.get(chat._id);
-        if (!existing) map.set(chat._id, chat);
-        else map.set(chat._id, newerChat(existing, chat));
+      const map = new Map(s.fetch.allChats.map((c) => [toId(c), c]));
+      for (const raw of incomingList) {
+        const chat = sanitizeChat(raw);
+        const id = toId(chat);
+        const existing = map.get(id);
+        if (!existing) map.set(id, chat);
+        else map.set(id, newerChat(existing, chat));
       }
-
-      // Assign back, sorted by recency
       s.fetch.isFetching = false;
-      s.fetch.allChats = Array.from(map.values()).sort(
-        (a, b) =>
-          new Date(b?.updatedAt || b?.latestMessage?.createdAt || 0) -
-          new Date(a?.updatedAt || a?.latestMessage?.createdAt || 0)
-      );
+      s.fetch.allChats = sortByRecencyDesc(Array.from(map.values()));
     },
     fetchFailed: (s) => {
       s.fetch.isFetching = false;
@@ -107,6 +151,7 @@ export const chatSlice = createSlice({
     // groups
     createGroupStart: (s) => {
       s.group.isFetching = true;
+      s.group.error = false;
     },
     createGroupSuccess: (s, a) => {
       s.group.isFetching = false;
@@ -118,9 +163,10 @@ export const chatSlice = createSlice({
       s.group.error = true;
     },
 
-    //add user to group
+    // add user to group
     addUserToGroupStart: (s) => {
       s.add.isFetching = true;
+      s.add.error = false;
     },
     addUserToGroupSuccess: (s, a) => {
       s.add.isFetching = false;
@@ -132,9 +178,10 @@ export const chatSlice = createSlice({
       s.add.error = true;
     },
 
-    //remove user from group
+    // remove user from group
     removeUserFromGoupStart: (s) => {
       s.remove.isFetching = true;
+      s.remove.error = false;
     },
     removeUserFromGroupSuccess: (s, a) => {
       s.remove.isFetching = false;
@@ -146,7 +193,7 @@ export const chatSlice = createSlice({
       s.remove.error = true;
     },
 
-    //get by id
+    // get by id
     getByIdStart: (s) => {
       s.getById.isFetching = true;
       s.getById.error = false;
@@ -160,28 +207,52 @@ export const chatSlice = createSlice({
       s.getById.error = true;
     },
 
-    //set latest message for chat list
+    // latest message + bump to top
     setLatestMessageAndBump: (state, { payload }) => {
       const { chatId, message, updatedAt } = payload;
       const list = state.fetch.allChats;
       if (!Array.isArray(list)) return;
 
-      const idx = list.findIndex((c) => c._id == chatId);
-      if (idx === -1) return;
+      const id = String(chatId);
+      const idx = list.findIndex((c) => toId(c) === id);
 
-      const updatedChat = {
-        ...list[idx],
+      const patch = {
         latestMessage: message,
         updatedAt: updatedAt || new Date().toISOString(),
       };
-      list.splice(idx, 1);
-      list.unshift(updatedChat);
+
+      if (idx === -1) {
+        // create a minimal shell so list updates immediately
+        list.unshift(
+          sanitizeChat({
+            _id: id,
+            users: message?.chat?.users || [],
+            chatName: message?.chat?.chatName || "Chat",
+            isGroupChat: !!message?.chat?.isGroupChat,
+            ...patch,
+          })
+        );
+      } else {
+        list[idx] = { ...list[idx], ...patch };
+        // move to front
+        const [item] = list.splice(idx, 1);
+        list.unshift(item);
+      }
+
+      sortByRecencyDesc(list);
     },
+
     resetChatState: () => initialState,
   },
 });
 
 export const {
+  addOrUpdateChat,
+  removeChatById,
+  setViewedAt,
+  incrementUnread, // NEW
+  resetUnread, // NEW
+  setUnreadCount, // NEW
   accessStart,
   accessSuccess,
   accessFailed,

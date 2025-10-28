@@ -1,4 +1,3 @@
-// client/src/pages/Chatpage.jsx
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ChatList from "../components/ChatList";
@@ -13,17 +12,31 @@ import { fetchAllChats, fetchChatById } from "../redux/chat/chatApiRequest";
 import { createAxios } from "../createInstance";
 import { getAllUsers } from "../redux/user/userApiRequest";
 import SearchedFriends from "../components/SearchedFriends";
-import { setLatestMessageAndBump } from "../redux/chat/chatSlice";
+import {
+  setLatestMessageAndBump,
+  addOrUpdateChat,
+  removeChatById,
+  setViewedAt as setViewedAtRedux,
+  incrementUnread, // NEW
+  resetUnread, // NEW
+} from "../redux/chat/chatSlice";
 import { getSocket } from "../lib/socket";
+
+const nowISO = () => new Date().toISOString();
+const viewedKey = (id) => `viewedAt:${id}`;
+const isWindowFocused = () => document.visibilityState === "visible";
+const isOnChatRoute = (chatId) =>
+  typeof window !== "undefined" &&
+  window.location.pathname.startsWith(`/chats/${chatId}`);
 
 const Chatpage = () => {
   const [searchQuery, setSearchQuery] = React.useState("");
   const [search, setSearch] = React.useState(false);
   const [activeChatTab, setActiveChatTab] = React.useState(0);
 
-  const user = useSelector((state) => state.user.login.currentUser);
-  const chats = useSelector((state) => state.chat.fetch.allChats);
-  const users = useSelector((state) => state.user.users.allUsers);
+  const user = useSelector((s) => s.user.login.currentUser);
+  const chats = useSelector((s) => s.chat.fetch.allChats);
+  const users = useSelector((s) => s.user.users.allUsers);
 
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -33,24 +46,26 @@ const Chatpage = () => {
     [user?.accessToken] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  // Initial data
+  // initial data
   React.useEffect(() => {
     if (!user) {
       navigate("/");
       return;
     }
     if (!axiosJWT) return;
-
     fetchAllChats(dispatch, user.accessToken, axiosJWT);
     getAllUsers(dispatch, user.accessToken, axiosJWT);
   }, [user?._id, user?.accessToken, axiosJWT, dispatch, navigate]);
 
-  // 🔊 Join all chat rooms + listen for message:new to bump/sort list
+  // sockets
   React.useEffect(() => {
     if (!user?.accessToken) return;
     const socket = getSocket(user.accessToken);
 
-    // join every chat room we know
+    // join personal user room so server can target you
+    if (user?._id) socket.emit("user:join", { userId: String(user._id) });
+
+    // join known chat rooms
     const ids = (chats || []).map((c) => String(c._id));
     ids.forEach((id) => socket.emit("chat:join", { chatId: id }));
 
@@ -58,13 +73,37 @@ const Chatpage = () => {
       const chatId = String(msg?.chat?._id || "");
       if (!chatId) return;
 
-      // If this chat isn't in the list yet, fetch it once
+      // ensure chat exists locally
       const exists = (chats || []).some((c) => String(c._id) === chatId);
       if (!exists) {
         fetchChatById(chatId, dispatch, user.accessToken, axiosJWT);
       }
 
-      // bump latestMessage + updatedAt for sorting
+      // if this is my own message, don't increment unread
+      if (String(msg?.sender?._id || "") === String(user?._id || "")) {
+        dispatch(
+          setLatestMessageAndBump({
+            chatId,
+            message: msg,
+            updatedAt: msg.createdAt,
+          })
+        );
+        return;
+      }
+
+      // If I'm currently on that chat *and* the window is focused,
+      // treat it as read immediately.
+      if (isOnChatRoute(chatId) && isWindowFocused()) {
+        const at = nowISO();
+        localStorage.setItem(viewedKey(chatId), at);
+        dispatch(setViewedAtRedux({ chatId, at }));
+        dispatch(resetUnread(chatId)); // NEW
+      } else {
+        // Otherwise increment unread
+        dispatch(incrementUnread(chatId)); // NEW
+      }
+
+      // bump list for sorting/preview
       dispatch(
         setLatestMessageAndBump({
           chatId,
@@ -74,21 +113,47 @@ const Chatpage = () => {
       );
     };
 
+    const handleChatCreated = (chat) => {
+      dispatch(addOrUpdateChat(chat));
+      socket.emit("chat:join", { chatId: String(chat._id) }); // start receiving
+    };
+
+    const handleChatUpdated = (chat) => {
+      dispatch(addOrUpdateChat(chat));
+    };
+
+    const handleChatRemoved = ({ chatId }) => {
+      socket.emit("chat:leave", { chatId: String(chatId) });
+      dispatch(removeChatById(chatId));
+      // if you're currently in that chat route, bounce to /chats
+      if (window.location.pathname.startsWith(`/chats/${chatId}`)) {
+        navigate("/chats");
+      }
+    };
+
     socket.on("message:new", handleNewMessage);
+    socket.on("chat:created", handleChatCreated);
+    socket.on("chat:updated", handleChatUpdated);
+    socket.on("chat:removed", handleChatRemoved);
 
     return () => {
       ids.forEach((id) => socket.emit("chat:leave", { chatId: id }));
       socket.off("message:new", handleNewMessage);
+      socket.off("chat:created", handleChatCreated);
+      socket.off("chat:updated", handleChatUpdated);
+      socket.off("chat:removed", handleChatRemoved);
     };
     // re-run when the set of chat IDs changes
   }, [
+    user?._id,
     user?.accessToken,
     dispatch,
     axiosJWT,
+    navigate,
     JSON.stringify((chats || []).map((c) => c._id)),
   ]);
 
-  // 🔽 Sort chats by latest activity (latestMessage.createdAt fallback to updatedAt)
+  // sort chats by latest activity
   const sortedChats = React.useMemo(() => {
     const getTime = (c) =>
       new Date(c?.latestMessage?.createdAt || c?.updatedAt || 0).getTime();
@@ -102,11 +167,6 @@ const Chatpage = () => {
         u.email?.toLowerCase().includes(searchQuery?.toLowerCase())
       ) || [];
 
-  const chatsTabs = [
-    <BsFillChatFill className="w-6 h-6" key="tab-chats" />,
-    <BsPeopleFill className="w-6 h-6" key="tab-people" />,
-  ];
-
   return (
     <div className="container text-white">
       {/* header */}
@@ -118,7 +178,7 @@ const Chatpage = () => {
             </div>
           </Link>
           <div className="flex items-center">
-            <p className="text-[rgb(134,122,245)] ">Chats</p>
+            <p className="text-[rgb(134,122,245)]">Chats</p>
           </div>
           <Link to="/creategroup">
             <div className="text-[rgb(134,122,245)]">
@@ -176,7 +236,7 @@ const Chatpage = () => {
           <div className="fixed bottom-0 w-full">
             <div className="backdrop-blur-xl bg-white/75">
               <div className="flex justify-around py-3">
-                {chatsTabs.map((tab, idx) => (
+                {[0, 1].map((idx) => (
                   <button
                     key={idx}
                     onClick={() => setActiveChatTab(idx)}
@@ -186,7 +246,11 @@ const Chatpage = () => {
                         : "text-[#46494d]"
                     }
                   >
-                    {tab}
+                    {idx === 0 ? (
+                      <BsFillChatFill className="w-6 h-6" />
+                    ) : (
+                      <BsPeopleFill className="w-6 h-6" />
+                    )}
                   </button>
                 ))}
               </div>

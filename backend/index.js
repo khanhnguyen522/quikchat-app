@@ -34,14 +34,25 @@ const io = new Server(server, {
   },
 });
 
+// expose io to controllers
+app.set("io", io);
+
 io.on("connection", (socket) => {
   console.log("✅ Socket connected:", socket.id);
 
+  // client should call socket.emit("user:join", { userId })
+  socket.on("user:join", ({ userId }) => {
+    if (!userId) return;
+    socket.join(String(userId));
+  });
+
   socket.on("chat:join", ({ chatId }) => {
+    if (!chatId) return;
     socket.join(String(chatId));
   });
 
   socket.on("chat:leave", ({ chatId }) => {
+    if (!chatId) return;
     socket.leave(String(chatId));
   });
 
@@ -52,8 +63,6 @@ io.on("connection", (socket) => {
     console.log("❌ Socket disconnected:", socket.id);
   });
 });
-
-app.set("io", io);
 
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => console.log(`Server started on PORT ${PORT}`));

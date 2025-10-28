@@ -16,6 +16,7 @@ import {
 } from "../redux/chat/chatApiRequest";
 import { createAxios } from "../createInstance";
 import { loginSuccess } from "../redux/user/userSlice";
+import { removeChatById } from "../redux/chat/chatSlice";
 
 // tiny debounce util
 const useDebounced = (value, delay = 200) => {
@@ -36,7 +37,6 @@ const ChatInfo = () => {
   const loggedUser = useSelector((s) => s.user.login.currentUser);
   const allUsers = useSelector((s) => s.user.users.allUsers) || [];
 
-  // axios instance that updates only when token changes
   const axiosJWT = React.useMemo(
     () => createAxios(loggedUser, dispatch, loginSuccess),
     [loggedUser?.accessToken] // eslint-disable-line react-hooks/exhaustive-deps
@@ -52,15 +52,25 @@ const ChatInfo = () => {
     fetchAllChats(dispatch, loggedUser.accessToken, axiosJWT);
   }, [loggedUser?.accessToken, axiosJWT, dispatch, navigate]);
 
-  // derive the current chat (no local copy)
   const foundChat = React.useMemo(
     () => chats.find((c) => String(c?._id) === String(chatId)),
     [chats, chatId]
   );
 
+  // if you’re no longer a member, bounce
+  React.useEffect(() => {
+    if (!foundChat || !loggedUser?._id) return;
+    const inChat = (foundChat.users || []).some(
+      (u) => String(u?._id) === String(loggedUser._id)
+    );
+    if (!inChat) {
+      dispatch(removeChatById(chatId));
+      navigate("/chats");
+    }
+  }, [foundChat, loggedUser?._id, chatId, dispatch, navigate]);
+
   const isGroupChat = !!foundChat?.isGroupChat;
 
-  // derive header info
   const { name, pic, email } = React.useMemo(() => {
     if (!foundChat) return { name: "", pic: "", email: "" };
     if (foundChat.isGroupChat) {
@@ -82,17 +92,14 @@ const ChatInfo = () => {
   const chatMembers = foundChat?.users || [];
   const groupAdmin = foundChat?.groupAdmin;
 
-  // UI toggles
   const [addAction, setAddAction] = React.useState(false);
   const [removeAction, setRemoveAction] = React.useState(false);
 
-  // searches with debounce
   const [searchAddQuery, setSearchAddQuery] = React.useState("");
   const [searchRemoveQuery, setSearchRemoveQuery] = React.useState("");
   const qAdd = useDebounced(searchAddQuery, 200);
   const qRemove = useDebounced(searchRemoveQuery, 200);
 
-  // filtered lists (memoized)
   const filteredAddUsers = React.useMemo(() => {
     const q = qAdd.trim().toLowerCase();
     if (!q) return [];

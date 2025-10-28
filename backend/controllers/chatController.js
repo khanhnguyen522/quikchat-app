@@ -1,185 +1,186 @@
+// controllers/chatController.js
 const asyncHandler = require("express-async-handler");
 const Chat = require("../models/chatModel");
-const User = require("../models/userModel");
-const Message = require("../models/messageModel");
+
+const normalizeUsers = (users) => {
+  try {
+    if (typeof users === "string") {
+      const parsed = JSON.parse(users);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (_) {}
+  return Array.isArray(users) ? users : [];
+};
+
+const populateChat = (q) =>
+  q
+    .populate("users", "-password")
+    .populate("groupAdmin", "-password")
+    .populate({
+      path: "latestMessage",
+      populate: { path: "sender", select: "name pic email" },
+    });
 
 const chatController = {
+  // 1:1 chat (create if not exists)
   accessChat: asyncHandler(async (req, res) => {
     const { userId } = req.body;
     if (!userId) {
       return res.status(400).json("User ID param is not sent with request!");
     }
 
-    var isChat = await Chat.find({
+    let foundIds = await Chat.find({
       isGroupChat: false,
       $and: [
         { users: { $elemMatch: { $eq: req.user.id } } },
         { users: { $elemMatch: { $eq: userId } } },
       ],
-    })
-      .populate("users", "-password")
-      .populate("latestMessage");
+    }).select("_id");
+    const found = await populateChat(
+      Chat.find({ _id: { $in: foundIds.map((c) => c._id) } })
+    );
 
-    isChat = await User.populate(isChat, {
-      path: "latestMessage.sender",
-      select: "name pic email",
+    if (found.length > 0) {
+      return res.status(200).json(found[0]);
+    }
+
+    // create new 1:1
+    const created = await Chat.create({
+      chatName: "sender",
+      isGroupChat: false,
+      users: [req.user.id, userId],
     });
+    const fullChat = await populateChat(Chat.findById(created._id));
 
-    console.log(isChat.length);
+    // notify both users that a chat exists now
+    const io = req.app.get("io");
+    [req.user.id, userId].forEach((uid) =>
+      io.to(String(uid)).emit("chat:created", fullChat)
+    );
 
-    if (isChat.length > 0) {
-      res.status(200).send(isChat[0]);
-    } else {
-      var chatData = {
-        chatName: "sender",
-        isGroupChat: false,
-        users: [req.user.id, userId],
-      };
-      try {
-        const createdChat = await Chat.create(chatData);
-        const fullChat = await Chat.findOne({ _id: createdChat._id }).populate(
-          "users",
-          "-password"
-        );
-
-        res.status(200).send(fullChat);
-      } catch (err) {
-        return res.status(400).json(err.message);
-      }
-    }
+    return res.status(200).json(fullChat);
   }),
 
+  // list my chats
   fetchChats: asyncHandler(async (req, res) => {
-    try {
-      await Chat.find({ users: { $elemMatch: { $eq: req.user.id } } })
-        .populate("users", "-password")
-        .populate("groupAdmin", "-password")
-        .populate("latestMessage")
-        .sort({ updatedAt: -1 })
-        .then(async (results) => {
-          results = await User.populate(results, {
-            path: "latestMessage.sender",
-            select: "name pic email",
-          });
-
-          return res.status(200).json(results);
-        });
-    } catch (err) {
-      return res.status(400).json(err.message);
-    }
+    const results = await populateChat(
+      Chat.find({ users: { $elemMatch: { $eq: req.user.id } } }).sort({
+        updatedAt: -1,
+      })
+    );
+    return res.status(200).json(results);
   }),
 
+  // get by id (only if member)
   getChatById: asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const chat = await Chat.findOne({
-      _id: id,
-      users: { $elemMatch: { $eq: req.user.id } },
-    })
-      .select("chatName isGroupChat users groupAdmin latestMessage updatedAt")
-      .populate({ path: "users", select: "name pic email" })
-      .populate({ path: "groupAdmin", select: "name pic email" })
-      .populate({
-        path: "latesMessage",
-        select: "content sender createdAt",
-        populate: { path: "sender", select: "name pic email" },
-      })
-      .lean();
+    const chat = await populateChat(
+      Chat.findOne({
+        _id: id,
+        users: { $elemMatch: { $eq: req.user.id } },
+      }).select("chatName isGroupChat users groupAdmin latestMessage updatedAt")
+    ).lean();
 
     if (!chat) {
       return res.status(404).json("Chat not found or no access.");
     }
-
     return res.status(200).json(chat);
   }),
 
+  // create group
   createGroupChat: asyncHandler(async (req, res) => {
-    if (!req.body.users || !req.body.name) {
+    const { name } = req.body;
+    if (!name || !req.body.users) {
       return res.status(400).json({ message: "Please fill all the fields" });
     }
-    var users = JSON.parse(req.body.users);
+
+    let users = normalizeUsers(req.body.users);
     if (users.length < 2) {
       return res
         .status(400)
         .json("More than 2 users are required to form a group chat");
     }
-    users.push(req.user.id);
-
-    try {
-      const groupChat = await Chat.create({
-        chatName: req.body.name,
-        users: users,
-        isGroupChat: true,
-        groupAdmin: req.user.id,
-      });
-
-      const fullGroupChat = await Chat.findOne({ _id: groupChat._id })
-        .populate("users", "--password")
-        .populate("groupAdmin", "-password");
-
-      console.log(fullGroupChat);
-
-      return res.status(200).json(fullGroupChat);
-    } catch (err) {
-      console.log(err);
-      res.status(400).json(err);
+    // include creator
+    if (!users.some((u) => String(u) === String(req.user.id))) {
+      users.push(req.user.id);
     }
+
+    const group = await Chat.create({
+      chatName: name,
+      users,
+      isGroupChat: true,
+      groupAdmin: req.user.id,
+    });
+
+    const fullGroup = await populateChat(Chat.findById(group._id));
+
+    // notify everyone
+    const io = req.app.get("io");
+    (fullGroup.users || []).forEach((u) =>
+      io.to(String(u._id)).emit("chat:created", fullGroup)
+    );
+
+    return res.status(200).json(fullGroup);
   }),
 
+  // rename group
   renameGroup: asyncHandler(async (req, res) => {
     const { chatId, chatName } = req.body;
-    const updatedChat = await Chat.findByIdAndUpdate(
-      chatId,
-      {
-        chatName,
-      },
-      { new: true }
-    )
-      .populate("users", "-password")
-      .populate("groupAdmin", "-password");
+    const updated = await populateChat(
+      Chat.findByIdAndUpdate(
+        chatId,
+        { chatName, updatedAt: new Date() },
+        { new: true }
+      )
+    );
 
-    if (!updatedChat) {
-      return res.status(404).json("Chat not found");
-    } else {
-      return res.status(200).json(updatedChat);
-    }
+    if (!updated) return res.status(404).json("Chat not found");
+
+    // broadcast the change
+    const io = req.app.get("io");
+    io.to(String(updated._id)).emit("chat:updated", updated);
+
+    return res.status(200).json(updated);
   }),
 
+  // add member
   addToGroup: asyncHandler(async (req, res) => {
     const { chatId, userId } = req.body;
-    const added = await Chat.findByIdAndUpdate(
-      chatId,
-      { $push: { users: userId } },
-      { new: true }
-    )
-      .populate("users", "-password")
-      .populate("groupAdmin", "-password");
+    const added = await populateChat(
+      Chat.findByIdAndUpdate(
+        chatId,
+        { $addToSet: { users: userId }, updatedAt: new Date() },
+        { new: true }
+      )
+    );
 
-    if (!added) {
-      return res.status(404).json("Chat not found");
-    } else {
-      return res.status(200).json(added);
-    }
+    if (!added) return res.status(404).json("Chat not found");
+
+    const io = req.app.get("io");
+    io.to(String(added._id)).emit("chat:updated", added);
+    io.to(String(userId)).emit("chat:created", added); // new member gets the chat
+
+    return res.status(200).json(added);
   }),
 
+  // remove member
   removeFromGroup: asyncHandler(async (req, res) => {
     const { chatId, userId } = req.body;
-    const removed = await Chat.findByIdAndUpdate(
-      chatId,
-      {
-        $pull: { users: userId },
-      },
-      {
-        new: true,
-      }
-    )
-      .populate("users", "-password")
-      .populate("groupAdmin", "-password");
+    const removed = await populateChat(
+      Chat.findByIdAndUpdate(
+        chatId,
+        { $pull: { users: userId }, updatedAt: new Date() },
+        { new: true }
+      )
+    );
 
-    if (!removed) {
-      return res.status(404).json("Chat not found");
-    } else {
-      return res.status(200).json(removed);
-    }
+    if (!removed) return res.status(404).json("Chat not found");
+
+    const io = req.app.get("io");
+    io.to(String(removed._id)).emit("chat:updated", removed);
+    io.to(String(userId)).emit("chat:removed", { chatId }); // tell kicked user
+
+    return res.status(200).json(removed);
   }),
 };
 

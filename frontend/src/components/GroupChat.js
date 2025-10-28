@@ -1,4 +1,3 @@
-// client/src/pages/GroupChat.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
@@ -8,7 +7,12 @@ import { FaLocationArrow } from "react-icons/fa";
 import { createAxios } from "../createInstance";
 import { loginSuccess } from "../redux/user/userSlice";
 import { fetchChatById } from "../redux/chat/chatApiRequest";
-import { setLatestMessageAndBump } from "../redux/chat/chatSlice";
+import {
+  setLatestMessageAndBump,
+  setViewedAt as setViewedAtRedux,
+  resetUnread,
+  incrementUnread, // NEW
+} from "../redux/chat/chatSlice";
 import {
   getAllMessages,
   sendMessage,
@@ -18,6 +22,9 @@ import {
   sendMessageSuccess as addMessageToThread,
 } from "../redux/message/messageSlice";
 import { getSocket } from "../lib/socket";
+
+const nowISO = () => new Date().toISOString();
+const viewedKey = (id) => `viewedAt:${id}`;
 
 const GroupChat = () => {
   const { id: chatId } = useParams();
@@ -36,27 +43,54 @@ const GroupChat = () => {
   const [isSending, setIsSending] = useState(false);
   const [optimistic, setOptimistic] = useState([]);
 
-  // helper to avoid duplicate inserts on socket echoes
   const hasMsg = (id) =>
     !!serverList.find((m) => String(m?._id) === String(id));
 
-  // join room + listen for socket messages
+  // capture previous viewed time for divider
+  const prevViewedRef = useRef(null);
+
+  // join room + listen for socket messages (this chat + other chats)
   useEffect(() => {
     if (!user?.accessToken || !chatId) return;
     const socket = getSocket(user.accessToken);
 
+    if (user?._id) socket.emit("user:join", { userId: String(user._id) });
     socket.emit("chat:join", { chatId });
 
     const handleNewMessage = (msg) => {
-      if (String(msg?.chat?._id) !== String(chatId)) return;
-      if (msg?._id && hasMsg(msg._id)) return;
+      const incomingChatId = String(msg?.chat?._id || "");
+      if (!incomingChatId) return;
 
-      // push to thread
-      dispatch(addMessageToThread({ chatId: msg.chat._id, message: msg }));
-      // bump in chat list
+      const isMine = String(msg?.sender?._id || "") === String(user?._id || "");
+
+      if (incomingChatId === String(chatId)) {
+        if (msg?._id && hasMsg(msg._id)) return;
+        dispatch(addMessageToThread({ chatId: msg.chat._id, message: msg }));
+        dispatch(
+          setLatestMessageAndBump({
+            chatId: msg.chat._id,
+            message: msg,
+            updatedAt: msg.createdAt,
+          })
+        );
+        return;
+      }
+
+      // message for another chat: make sure it exists locally then bump + unread
+      const exists = (chats || []).some(
+        (c) => String(c._id) === incomingChatId
+      );
+      if (!exists) {
+        fetchChatById(incomingChatId, dispatch, user.accessToken, axiosJWT);
+      }
+
+      if (!isMine) {
+        dispatch(incrementUnread(incomingChatId));
+      }
+
       dispatch(
         setLatestMessageAndBump({
-          chatId: msg.chat._id,
+          chatId: incomingChatId,
           message: msg,
           updatedAt: msg.createdAt,
         })
@@ -69,11 +103,21 @@ const GroupChat = () => {
       socket.emit("chat:leave", { chatId });
       socket.off("message:new", handleNewMessage);
     };
-  }, [chatId, user?.accessToken, dispatch]);
+  }, [chatId, user?.accessToken, dispatch, user?._id, chats, axiosJWT]);
 
-  // initial data load
+  // initial data load + viewed timestamps + unread reset
   useEffect(() => {
     if (!chatId || !user?.accessToken) return;
+
+    // capture prev viewed first
+    const prev = localStorage.getItem(viewedKey(chatId));
+    prevViewedRef.current = prev ? new Date(prev).toISOString() : null;
+
+    const at = nowISO();
+    localStorage.setItem(viewedKey(chatId), at);
+    dispatch(setViewedAtRedux({ chatId, at })); // optional
+    dispatch(resetUnread(chatId)); // zero the badge when you open
+
     dispatch(setActiveChat(chatId));
     if (!thisChat) {
       fetchChatById(chatId, dispatch, user.accessToken, axiosJWT);
@@ -92,6 +136,16 @@ const GroupChat = () => {
 
   const myId = String(user?._id || "");
 
+  // divider index (first incoming after previous viewedAt)
+  const prevViewedAtMs = prevViewedRef.current
+    ? new Date(prevViewedRef.current).getTime()
+    : 0;
+  const dividerIndex = messageList.findIndex((m) => {
+    const t = new Date(m.createdAt || 0).getTime();
+    const senderId = String(m?.sender?._id || "");
+    return senderId !== myId && t > prevViewedAtMs;
+  });
+
   // auto scroll
   const messageEndRef = useRef(null);
   useEffect(() => {
@@ -107,7 +161,7 @@ const GroupChat = () => {
     setNewMessage("");
 
     const clientId = "c_" + Date.now();
-    const createdAt = new Date().toISOString();
+    const createdAt = nowISO();
     const temp = {
       clientId,
       content,
@@ -116,6 +170,11 @@ const GroupChat = () => {
       createdAt,
       __optimistic: true,
     };
+    // mark viewed so my own message isn't counted as new
+    localStorage.setItem(viewedKey(chatId), createdAt);
+    dispatch(setViewedAtRedux({ chatId, at: createdAt }));
+    dispatch(resetUnread(chatId));
+
     setOptimistic((p) => [...p, temp]);
 
     try {
@@ -125,7 +184,6 @@ const GroupChat = () => {
         user.accessToken,
         axiosJWT
       );
-      // remove optimistic once the real one is inserted via dispatch in sendMessage
       setOptimistic((p) => p.filter((m) => m.clientId !== clientId));
 
       if (saved) {
@@ -139,7 +197,7 @@ const GroupChat = () => {
       }
     } catch (e) {
       setOptimistic((p) => p.filter((m) => m.clientId !== clientId));
-      setNewMessage(content); // rollback input
+      setNewMessage(content);
       console.log(e);
     } finally {
       setIsSending(false);
@@ -199,12 +257,6 @@ const GroupChat = () => {
               className="w-32 h-32 rounded-full"
             />
           </div>
-          <div className="flex justify-center text-2xl font-[600]">
-            {thisChat?.chatName || "Group"}
-          </div>
-          <div className="flex text-center text-[#6c7175]">
-            All of you can now engage in a conversation with each other
-          </div>
         </div>
 
         {messageList.map((m, idx) => {
@@ -217,47 +269,55 @@ const GroupChat = () => {
             String(prev.sender._id) === String(m?.sender?._id);
 
           return (
-            <div
-              key={m._id || m.clientId}
-              className={`flex ${
-                isMine ? "justify-end" : "justify-start"
-              } items-center space-x-2 my-1`}
-            >
-              {!isMine && (
-                <div className="flex max-w-[50%]">
-                  {!isSameSender ? (
-                    <div className="flex space-x-1 items-center">
-                      <img
-                        src={
-                          m?.sender?.pic ||
-                          "https://icon-library.com/images/anonymous-avatar-icon/anonymous-avatar-icon-25.jpg"
-                        }
-                        className="w-6 h-6 rounded-full"
-                        alt={m?.sender?.name || "User"}
-                      />
-                      <div className="p-2 rounded-3xl px-3 bg-gray-200 text-black text-sm whitespace-normal">
-                        <div className="text-xs font-semibold opacity-70">
-                          {m?.sender?.name || "User"}
+            <React.Fragment key={m._id || m.clientId}>
+              {dividerIndex >= 0 && idx === dividerIndex && (
+                <div className="w-full flex justify-center my-2">
+                  <span className="text-xs px-2 py-1 rounded-full bg-[#e9ecee] text-gray-600">
+                    New messages
+                  </span>
+                </div>
+              )}
+              <div
+                className={`flex ${
+                  isMine ? "justify-end" : "justify-start"
+                } items-center space-x-2 my-1`}
+              >
+                {!isMine && (
+                  <div className="flex max-w-[50%]">
+                    {!isSameSender ? (
+                      <div className="flex space-x-1 items-center">
+                        <img
+                          src={
+                            m?.sender?.pic ||
+                            "https://icon-library.com/images/anonymous-avatar-icon/anonymous-avatar-icon-25.jpg"
+                          }
+                          className="w-6 h-6 rounded-full"
+                          alt={m?.sender?.name || "User"}
+                        />
+                        <div className="p-2 rounded-3xl px-3 bg-gray-200 text-black text-sm whitespace-normal">
+                          <div className="text-xs font-semibold opacity-70">
+                            {m?.sender?.name || "User"}
+                          </div>
+                          {m?.content}
                         </div>
+                      </div>
+                    ) : (
+                      <div className="p-2 ml-7 rounded-3xl px-3 bg-gray-200 text-black text-sm whitespace-normal">
                         {m?.content}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="p-2 ml-7 rounded-3xl px-3 bg-gray-200 text-black text-sm whitespace-normal">
+                    )}
+                  </div>
+                )}
+
+                {isMine && (
+                  <div className="flex max-w-[50%]">
+                    <div className="p-2 rounded-3xl px-3 bg-[rgb(134,122,245)] text-white text-sm whitespace-normal">
                       {m?.content}
                     </div>
-                  )}
-                </div>
-              )}
-
-              {isMine && (
-                <div className="flex max-w-[50%]">
-                  <div className="p-2 rounded-3xl px-3 bg-[rgb(134,122,245)] text-white text-sm whitespace-normal">
-                    {m?.content}
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            </React.Fragment>
           );
         })}
         <div ref={messageEndRef} />
