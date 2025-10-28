@@ -5,6 +5,11 @@ const router = express.Router();
 
 router.post("/", middlewareController.verifyToken, chatController.accessChat);
 router.get("/", middlewareController.verifyToken, chatController.fetchChats);
+router.get(
+  "/:id",
+  middlewareController.verifyToken,
+  chatController.getChatById
+);
 router.post(
   "/group",
   middlewareController.verifyToken,

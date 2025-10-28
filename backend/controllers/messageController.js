@@ -5,38 +5,48 @@ const Chat = require("../models/chatModel");
 
 const messageController = {
   sendMessage: asyncHandler(async (req, res) => {
-    const { chatId, content } = req.body;
-
-    if (!content || !chatId) {
-      return res.status(400).json("Invalid data passed into request");
-    }
-    var newMessage = {
-      sender: req.user.id,
-      content: content,
-      chat: chatId,
-    };
-
     try {
-      var message = await Message.create(newMessage);
-      message = await message.populate("sender", "-password");
-      message = await message.populate("chat");
-      message = await User.populate(message, {
+      const { content, chatId } = req.body;
+      if (!content || !chatId) {
+        return res.status(400).json({ message: "Invalid data" });
+      }
+
+      // create message (ensure your auth middleware sets req.user._id)
+      let msg = await Message.create({
+        sender: req.user._id ?? req.user.id,
+        content,
+        chat: chatId,
+      });
+
+      // populate relations for frontend
+      msg = await msg.populate([
+        { path: "sender", select: "name pic email" },
+        { path: "chat", select: "_id users" },
+      ]);
+      msg = await msg.populate({
         path: "chat.users",
         select: "name pic email",
       });
 
-      await Chat.findByIdAndUpdate(req.body.chatId, {
-        latestMessage: message,
+      // bump latestMessage + updatedAt on the chat (store ObjectId for latestMessage)
+      await Chat.findByIdAndUpdate(chatId, {
+        $set: { latestMessage: msg._id, updatedAt: new Date() },
       });
-      res.status(200).json(message);
-    } catch (err) {
-      return res.status(400).json(err.message);
+
+      // broadcast to room (server emits authoritative message)
+      const io = req.app.get("io");
+      io.to(String(chatId)).emit("message:new", msg);
+
+      return res.status(201).json(msg);
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ message: "Server error" });
     }
   }),
 
   allMessages: asyncHandler(async (req, res) => {
     try {
-      var messages = await Message.find({ chat: req.params.chatId })
+      let messages = await Message.find({ chat: req.params.chatId })
         .populate("sender", "name pic email")
         .populate("chat");
 
@@ -47,7 +57,8 @@ const messageController = {
 
       res.status(200).json(messages);
     } catch (err) {
-      return res.status(400).json(err.message);
+      console.error(err);
+      return res.status(500).json({ message: "Server error" });
     }
   }),
 };

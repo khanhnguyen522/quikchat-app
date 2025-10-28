@@ -69,6 +69,29 @@ const chatController = {
     }
   }),
 
+  getChatById: asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const chat = await Chat.findOne({
+      _id: id,
+      users: { $elemMatch: { $eq: req.user.id } },
+    })
+      .select("chatName isGroupChat users groupAdmin latestMessage updatedAt")
+      .populate({ path: "users", select: "name pic email" })
+      .populate({ path: "groupAdmin", select: "name pic email" })
+      .populate({
+        path: "latesMessage",
+        select: "content sender createdAt",
+        populate: { path: "sender", select: "name pic email" },
+      })
+      .lean();
+
+    if (!chat) {
+      return res.status(404).json("Chat not found or no access.");
+    }
+
+    return res.status(200).json(chat);
+  }),
+
   createGroupChat: asyncHandler(async (req, res) => {
     if (!req.body.users || !req.body.name) {
       return res.status(400).json({ message: "Please fill all the fields" });

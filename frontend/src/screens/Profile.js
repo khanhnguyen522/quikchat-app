@@ -69,9 +69,12 @@ const Profile = () => {
             </div>
 
             <div className="pb-12">
-              <div className="flex justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 lg:mx-28 md:mx-12">
-                <button onClick={handleLogout}>LOGOUT</button>
-              </div>
+              <button
+                onClick={handleLogout}
+                className="flex w-full justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 lg:mx-28 md:mx-12"
+              >
+                <div> LOGOUT</div>
+              </button>
             </div>
           </div>
         </div>

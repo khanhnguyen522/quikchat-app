@@ -15,6 +15,9 @@ import {
   removeUserFromGoupStart,
   removeUserFromGroupFailed,
   removeUserFromGroupSuccess,
+  getByIdStart,
+  getByIdSuccess,
+  getByIdFailed,
 } from "./chatSlice";
 
 export const accessSingleChat = async (
@@ -124,5 +127,24 @@ export const removeUserFromGroup = async (
   } catch (err) {
     console.log(err);
     dispatch(removeUserFromGroupFailed());
+  }
+};
+
+export const fetchChatById = async (
+  chatId,
+  dispatch,
+  accessToken,
+  axiosJWT
+) => {
+  dispatch(getByIdStart());
+  try {
+    const res = await axiosJWT.get(`/v1/chat/${chatId}`, {
+      headers: { token: `Bearer ${accessToken}` },
+    });
+    dispatch(getByIdSuccess(res.data));
+    return res.data;
+  } catch (err) {
+    console.log(err);
+    dispatch(getByIdFailed());
   }
 };

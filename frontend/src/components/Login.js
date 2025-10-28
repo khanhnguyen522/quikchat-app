@@ -51,9 +51,12 @@ const Login = () => {
         </div>
 
         <div className="pb-12">
-          <div className="flex justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 xs:mt-6 sm:mx-8 md:mx-8 lg:mx-12">
-            <button type="submit">CONTINUE</button>
-          </div>
+          <button
+            type="submit"
+            className="flex w-full justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 xs:mt-6 sm:mx-8 md:mx-8 lg:mx-12"
+          >
+            <div>CONTINUE</div>
+          </button>
         </div>
       </form>
     </div>

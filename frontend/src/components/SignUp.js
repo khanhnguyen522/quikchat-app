@@ -82,9 +82,12 @@ const SignUp = () => {
         </div>
 
         <div className="pb-12">
-          <div className="flex justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 xs:mt-6 sm:mx-8 md:mx-8 lg:mx-12 p-2">
-            <button type="submit">REGISTER</button>
-          </div>
+          <button
+            type="submit"
+            className="flex w-full justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mt-10 xs:mt-6 sm:mx-8 md:mx-8 lg:mx-12 p-2"
+          >
+            <div>REGISTER</div>
+          </button>
         </div>
       </form>
     </div>

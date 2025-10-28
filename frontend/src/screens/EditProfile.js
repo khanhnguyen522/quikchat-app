@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Avatar from "../asset/avatar.svg";
 import { AiOutlineArrowLeft } from "react-icons/ai";
@@ -36,6 +36,7 @@ const EditProfile = () => {
           <div className="">
             <div className="flex p-2 mx-3 justify-start">
               <Link to="/profile">
+                {" "}
                 <div className="text-[rgb(134,122,245)]">
                   <AiOutlineArrowLeft className="w-8 h-8" />
                 </div>
@@ -99,9 +100,12 @@ const EditProfile = () => {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                 />
               </div>
-              <div className="flex justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mx-4 lg:mx-28 md:mx-12">
-                <button type="submit">UPDATE</button>
-              </div>
+              <button
+                type="submit"
+                className="flex w-full justify-center items-center rounded-md h-8 bg-[rgb(134,122,245)] text-white mx-4 lg:mx-28 md:mx-12"
+              >
+                <div>UPDATE</div>
+              </button>
             </form>
             <div className="pb-12"></div>
           </div>

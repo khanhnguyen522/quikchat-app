@@ -16,12 +16,30 @@ import {
   getUsersFailed,
   editSuccess,
 } from "./userSlice";
+import { resetChatState } from "../chat/chatSlice";
+import { resetMessageState } from "../message/messageSlice";
+import { createAxios } from "../../createInstance";
+import { fetchAllChats } from "../chat/chatApiRequest";
 
 export const loginUser = async (user, dispatch, navigate) => {
   dispatch(loginStart());
   try {
     const res = await axios.post("/v1/user/login", user);
-    dispatch(loginSuccess(res.data));
+    const newUser = res.data;
+
+    // ✅ CLEAR previous session state FIRST
+    dispatch(resetChatState());
+    dispatch(resetMessageState());
+
+    // ✅ Store new session
+    dispatch(loginSuccess(newUser));
+    localStorage.setItem("user", JSON.stringify(newUser));
+
+    // ✅ Kick off initial data with the NEW token
+    const axiosForNew = createAxios(newUser, dispatch, loginSuccess);
+    fetchAllChats(dispatch, newUser.accessToken, axiosForNew);
+    getAllUsers(dispatch, newUser.accessToken, axiosForNew);
+
     navigate("/chats");
   } catch (err) {
     console.log(err);
@@ -29,11 +47,26 @@ export const loginUser = async (user, dispatch, navigate) => {
   }
 };
 
+// REGISTER
 export const registerUser = async (user, dispatch, navigate) => {
   dispatch(registerStart());
   try {
     const res = await axios.post("/v1/user/", user);
-    dispatch(registerSuccess(res.data));
+    const newUser = res.data;
+
+    // ✅ CLEAR previous session state FIRST
+    dispatch(resetChatState());
+    dispatch(resetMessageState());
+
+    // ✅ Store new session
+    dispatch(registerSuccess(newUser)); // or loginSuccess(newUser) if you prefer one path
+    localStorage.setItem("user", JSON.stringify(newUser));
+
+    // ✅ Kick off initial data with the NEW token
+    const axiosForNew = createAxios(newUser, dispatch, loginSuccess);
+    fetchAllChats(dispatch, newUser.accessToken, axiosForNew);
+    getAllUsers(dispatch, newUser.accessToken, axiosForNew);
+
     navigate("/chats");
   } catch (err) {
     console.log(err);
@@ -41,17 +74,24 @@ export const registerUser = async (user, dispatch, navigate) => {
   }
 };
 
+// LOGOUT
 export const logout = async (dispatch, id, navigate, accessToken, axiosJWT) => {
   dispatch(logoutStart());
   try {
+    // If your server uses a refresh-token cookie, ask it to clear
     await axiosJWT.post("/v1/user/logout", id, {
       headers: { token: `Bearer ${accessToken}` },
     });
-    dispatch(logoutSuccess());
-    navigate("/");
   } catch (err) {
     console.log(err);
-    dispatch(logoutFailed());
+    // swallow error – we still clear client state
+  } finally {
+    // ✅ CLEAR all client session state
+    dispatch(resetChatState());
+    dispatch(resetMessageState());
+    dispatch(logoutSuccess());
+    localStorage.removeItem("user");
+    navigate("/");
   }
 };
 

@@ -1,11 +1,14 @@
-import React, { useState, useEffect } from "react";
+// client/src/pages/ChatInfo.jsx
+import React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AiOutlineArrowLeft } from "react-icons/ai";
-import { IoPersonAdd } from "react-icons/io5";
-import { IoPersonRemove } from "react-icons/io5";
+import {
+  IoPersonAdd,
+  IoPersonRemove,
+  IoAddCircleSharp,
+  IoRemoveCircle,
+} from "react-icons/io5";
 import { useSelector, useDispatch } from "react-redux";
-import { IoAddCircleSharp } from "react-icons/io5";
-import { IoRemoveCircle } from "react-icons/io5";
 import {
   addUserToGroup,
   fetchAllChats,
@@ -14,104 +17,112 @@ import {
 import { createAxios } from "../createInstance";
 import { loginSuccess } from "../redux/user/userSlice";
 
+// tiny debounce util
+const useDebounced = (value, delay = 200) => {
+  const [v, setV] = React.useState(value);
+  React.useEffect(() => {
+    const t = setTimeout(() => setV(value ?? ""), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return v ?? "";
+};
+
 const ChatInfo = () => {
-  const chatId = useParams().id;
+  const { id: chatId } = useParams();
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
-  const chats = useSelector((state) => state.chat.fetch.allChats);
-  //   const foundChat = chats.find((chat) => chat._id === chatId);
-  const loggedUser = useSelector((state) => state.user.login.currentUser);
-  const users = useSelector((state) => state.user.users.allUsers);
-  const axiosJWT = createAxios(loggedUser, dispatch, loginSuccess);
-  const [foundChat, setFoundChat] = useState();
-  //   const extractedChatId = chatId?.match(/(\d+)/)[0];
-  const [isGroupChat, setGroupChat] = useState(false);
-  const [name, setName] = useState("");
-  const [pic, setPic] = useState("");
-  const [email, setEmail] = useState("");
-  const [chatMembers, setChatMembers] = useState();
-  const [groupAdmin, setGroupAdmin] = useState();
+  const chats = useSelector((s) => s.chat.fetch.allChats) || [];
+  const loggedUser = useSelector((s) => s.user.login.currentUser);
+  const allUsers = useSelector((s) => s.user.users.allUsers) || [];
 
-  const [addAction, setAddAction] = useState(false);
-  const [removeAction, setRemoveAction] = useState(false);
-  const [addedUser, setAddedUser] = useState();
-  const [removedUser, setRemovedUser] = useState();
-  const [searchAddQuery, setSearchAddQuery] = useState();
-  const [searchRemoveQuery, setSearchRemoveQuery] = useState("");
+  // axios instance that updates only when token changes
+  const axiosJWT = React.useMemo(
+    () => createAxios(loggedUser, dispatch, loginSuccess),
+    [loggedUser?.accessToken] // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
-  useEffect(() => {
-    const thisChat = chats.find((chat) => chat._id === chatId);
-    setFoundChat(thisChat);
-
-    if (foundChat) {
-      if (foundChat?.isGroupChat) {
-        setGroupChat(true);
-        setName(foundChat.chatName);
-        setPic(
-          "https://icon-library.com/images/anonymous-avatar-icon/anonymous-avatar-icon-25.jpg"
-        );
-        setChatMembers(foundChat?.users);
-        setGroupAdmin(foundChat?.groupAdmin);
-      } else {
-        setGroupChat(false);
-        const otherUser = foundChat.users.find(
-          (user) => user._id !== loggedUser._id
-        );
-        setName(otherUser?.name);
-        setPic(otherUser?.pic);
-        setEmail(otherUser?.email);
-      }
+  // fetch once on mount (or when token changes), NOT when chats change
+  React.useEffect(() => {
+    if (!loggedUser) {
+      navigate("/");
+      return;
     }
-  }, [chats, chatId, loggedUser]);
+    if (!axiosJWT) return;
+    fetchAllChats(dispatch, loggedUser.accessToken, axiosJWT);
+  }, [loggedUser?.accessToken, axiosJWT, dispatch, navigate]);
 
-  useEffect(() => {
-    const fetchThisChat = async () => {
-      try {
-        await fetchAllChats(dispatch, loggedUser?.accessToken, axiosJWT);
-      } catch (err) {
-        console.log(err);
-      }
+  // derive the current chat (no local copy)
+  const foundChat = React.useMemo(
+    () => chats.find((c) => String(c?._id) === String(chatId)),
+    [chats, chatId]
+  );
+
+  const isGroupChat = !!foundChat?.isGroupChat;
+
+  // derive header info
+  const { name, pic, email } = React.useMemo(() => {
+    if (!foundChat) return { name: "", pic: "", email: "" };
+    if (foundChat.isGroupChat) {
+      return {
+        name: foundChat.chatName,
+        pic: "https://icon-library.com/images/anonymous-avatar-icon/anonymous-avatar-icon-25.jpg",
+        email: "",
+      };
+    }
+    const me = String(loggedUser?._id || "");
+    const other = (foundChat.users || []).find((u) => String(u?._id) !== me);
+    return {
+      name: other?.name || "",
+      pic: other?.pic || "",
+      email: other?.email || "",
     };
-    fetchThisChat();
-  }, [loggedUser, chats]);
+  }, [foundChat, loggedUser?._id]);
 
-  useEffect(() => {
-    setChatMembers(foundChat?.users);
-  });
+  const chatMembers = foundChat?.users || [];
+  const groupAdmin = foundChat?.groupAdmin;
 
-  const handleAddUser = () => {
-    setAddAction(!addAction);
+  // UI toggles
+  const [addAction, setAddAction] = React.useState(false);
+  const [removeAction, setRemoveAction] = React.useState(false);
+
+  // searches with debounce
+  const [searchAddQuery, setSearchAddQuery] = React.useState("");
+  const [searchRemoveQuery, setSearchRemoveQuery] = React.useState("");
+  const qAdd = useDebounced(searchAddQuery, 200);
+  const qRemove = useDebounced(searchRemoveQuery, 200);
+
+  // filtered lists (memoized)
+  const filteredAddUsers = React.useMemo(() => {
+    const q = qAdd.trim().toLowerCase();
+    if (!q) return [];
+    return allUsers.filter((u) => u.email?.toLowerCase().includes(q));
+  }, [allUsers, qAdd]);
+
+  const filteredRemoveUsers = React.useMemo(() => {
+    const q = qRemove.trim().toLowerCase();
+    const list = chatMembers;
+    if (!q) return list;
+    return list.filter((u) => u.email?.toLowerCase().includes(q));
+  }, [chatMembers, qRemove]);
+
+  const handleAddToggle = () => {
+    setAddAction((v) => !v);
     setRemoveAction(false);
   };
-
-  const handleDeleteUser = () => {
-    setRemoveAction(!removeAction);
+  const handleRemoveToggle = () => {
+    setRemoveAction((v) => !v);
     setAddAction(false);
   };
 
-  const filteredAddedUsers = users
-    ?.slice()
-    .filter((user) =>
-      user.email?.toLowerCase().includes(searchAddQuery?.toLowerCase())
-    );
-
-  const filteredRemovedUsers = chatMembers
-    ?.slice()
-    .filter((user) =>
-      user.email?.toLowerCase().includes(searchRemoveQuery?.toLowerCase())
-    );
-
-  const checkUserAlreadyInChat = (userId) => {
-    return chatMembers.some((member) => member._id === userId);
-  };
+  const isInChat = React.useCallback(
+    (userId) => chatMembers.some((m) => String(m?._id) === String(userId)),
+    [chatMembers]
+  );
 
   const addUser = async (user) => {
     const userId = user._id;
-    if (checkUserAlreadyInChat(userId)) {
-      console.log("1");
-      return;
-    }
+    if (isInChat(userId)) return;
     await addUserToGroup(
       chatId,
       userId,
@@ -120,12 +131,11 @@ const ChatInfo = () => {
       axiosJWT
     );
     setAddAction(false);
+    setSearchAddQuery("");
   };
 
   const removeUser = async (user) => {
-    console.log("start1");
     try {
-      console.log("start");
       const userId = user._id;
       await removeUserFromGroup(
         chatId,
@@ -134,60 +144,87 @@ const ChatInfo = () => {
         loggedUser?.accessToken,
         axiosJWT
       );
-      console.log("User removed successfully");
-    } catch (error) {
-      console.error("Error removing user:", error);
+    } catch (e) {
+      console.error(e);
     } finally {
       setRemoveAction(false);
-      if (user._id === loggedUser._id) {
+      setSearchRemoveQuery("");
+      if (String(user?._id) === String(loggedUser?._id)) {
         navigate("/chats");
       }
     }
   };
 
+  if (!foundChat) {
+    return (
+      <div className="p-4">
+        <Link
+          to="/chats"
+          className="text-[rgb(134,122,245)] flex items-center gap-2"
+        >
+          <AiOutlineArrowLeft className="w-6 h-6" />
+          Back
+        </Link>
+        <div className="mt-6 text-sm text-gray-600">Loading chat info…</div>
+      </div>
+    );
+  }
+
   return (
     <div>
+      {/* Top bar */}
       <div>
-        <div>
-          <Link to={`/chats/${chatId}`}>
-            <div className="text-[rgb(134,122,245)] m-3">
-              <AiOutlineArrowLeft className="w-8 h-8" />
-            </div>
-          </Link>
-        </div>
-        <div>
-          <div className="flex flex-col mt-11 sm:mx-32 md:mx-40 lg:mx-60 xl:mx-80 space-y-4 mb-10">
-            <div className="flex justify-center">
-              <img src={pic} alt="avatar" className="w-32 h-32 rounded-full" />
-            </div>
-            <div className="flex justify-center text-2xl font-[600]">
-              {name}
-            </div>
+        <Link to={`/chats/${chatId}`}>
+          <div className="text-[rgb(134,122,245)] m-3">
+            <AiOutlineArrowLeft className="w-8 h-8" />
           </div>
+        </Link>
+      </div>
+
+      {/* Header */}
+      <div>
+        <div className="flex flex-col mt-11 sm:mx-32 md:mx-40 lg:mx-60 xl:mx-80 space-y-4 mb-10">
+          <div className="flex justify-center">
+            <img
+              src={pic}
+              alt="avatar"
+              className="w-32 h-32 rounded-full"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
+          <div className="flex justify-center text-2xl font-[600]">{name}</div>
         </div>
       </div>
+
       {isGroupChat ? (
         <div>
+          {/* Actions */}
           <div className="flex flex-col items-center">
             <div className="font-semibold text-[rgb(134,122,245)]">
               Change name or image
             </div>
             <div className="flex gap-x-4 m-4">
-              <div
+              <button
+                type="button"
                 className="rounded-full bg-[rgb(227,228,229)] p-3"
-                onClick={() => handleAddUser()}
+                onClick={handleAddToggle}
+                aria-label="Add member"
               >
                 <IoPersonAdd />
-              </div>
-              <div
+              </button>
+              <button
+                type="button"
                 className="rounded-full bg-[#e3e4e5] p-3"
-                onClick={() => handleDeleteUser()}
+                onClick={handleRemoveToggle}
+                aria-label="Remove member"
               >
                 <IoPersonRemove />
-              </div>
+              </button>
             </div>
           </div>
 
+          {/* Add member */}
           {addAction && (
             <div className="flex flex-col justify-start m-4 gap-y-4">
               <div className="mx-2 text-[#6b6c6c]">Add member</div>
@@ -198,27 +235,34 @@ const ChatInfo = () => {
                   value={searchAddQuery}
                   onChange={(e) => setSearchAddQuery(e.target.value)}
                 />
-                {searchAddQuery && (
+                {qAdd && (
                   <div className="flex flex-col gap-y-3">
-                    {filteredAddedUsers.map((user) => (
-                      <div className="flex ">
+                    {filteredAddUsers.map((u) => (
+                      <div
+                        className="flex items-center justify-between"
+                        key={u._id}
+                      >
                         <div className="flex gap-x-3 m-1 justify-start">
                           <img
                             className="w-10 h-10 rounded-full"
-                            src={user?.pic}
+                            src={u?.pic}
                             alt="ava"
+                            loading="lazy"
+                            decoding="async"
                           />
                           <div className="text-md">
-                            <div>{user?.name}</div>
-                            <div>{user?.email}</div>
+                            <div>{u?.name}</div>
+                            <div className="text-sm text-gray-500">
+                              {u?.email}
+                            </div>
                           </div>
                         </div>
-                        <div className=" flex w-full justify-end">
-                          <button onClick={() => addUser(user)}>
-                            <IoAddCircleSharp className="w-7 h-7 text-[rgb(134,122,245)]" />
-                          </button>
-                        </div>
-                        <hr />
+                        <button
+                          onClick={() => addUser(u)}
+                          aria-label="Add this user"
+                        >
+                          <IoAddCircleSharp className="w-7 h-7 text-[rgb(134,122,245)]" />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -227,6 +271,7 @@ const ChatInfo = () => {
             </div>
           )}
 
+          {/* Remove member */}
           {removeAction && (
             <div className="flex flex-col justify-start m-4 gap-y-4">
               <div className="mx-2 text-[#6b6c6c]">Remove member</div>
@@ -237,71 +282,57 @@ const ChatInfo = () => {
                   value={searchRemoveQuery}
                   onChange={(e) => setSearchRemoveQuery(e.target.value)}
                 />
-                {searchRemoveQuery && (
-                  <div className="flex flex-col gap-y-3">
-                    {filteredRemovedUsers.map((user) => (
-                      <div className="flex ">
-                        <div className="flex gap-x-3 m-1 justify-start">
-                          <img
-                            className="w-10 h-10 rounded-full"
-                            src={user?.pic}
-                            alt="ava"
-                          />
-                          <div className="text-md">
-                            <div>{user?.name}</div>
-                            <div>{user?.email}</div>
-                          </div>
-                        </div>
-                        <div className=" flex w-full justify-end">
-                          <button onClick={() => removeUser(user)}>
-                            <IoRemoveCircle className="w-7 h-7 text-[rgb(134,122,245)]" />
-                          </button>
-                        </div>
-                        <hr />
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {searchRemoveQuery.trim() === "" &&
-                  chatMembers.map((user) => (
-                    <div className="flex ">
+                <div className="flex flex-col gap-y-3">
+                  {filteredRemoveUsers.map((u) => (
+                    <div
+                      className="flex items-center justify-between"
+                      key={u._id}
+                    >
                       <div className="flex gap-x-3 m-1 justify-start">
                         <img
                           className="w-10 h-10 rounded-full"
-                          src={user?.pic}
+                          src={u?.pic}
                           alt="ava"
+                          loading="lazy"
+                          decoding="async"
                         />
                         <div className="text-md">
-                          <div>{user?.name}</div>
-                          <div>{user?.email}</div>
+                          <div>{u?.name}</div>
+                          <div className="text-sm text-gray-500">
+                            {u?.email}
+                          </div>
                         </div>
                       </div>
-                      <div className=" flex w-full justify-end">
-                        <button onClick={() => removeUser(user)}>
-                          <IoRemoveCircle className="w-7 h-7 text-[rgb(134,122,245)]" />
-                        </button>
-                      </div>
-                      <hr />
+                      <button
+                        onClick={() => removeUser(u)}
+                        aria-label="Remove this user"
+                      >
+                        <IoRemoveCircle className="w-7 h-7 text-[rgb(134,122,245)]" />
+                      </button>
                     </div>
                   ))}
+                </div>
               </div>
             </div>
           )}
 
+          {/* Members */}
           <div className="flex flex-col justify-start m-4 gap-y-4">
             <div className="mx-2 text-[#6b6c6c]">Chat members</div>
             <div className="flex flex-col gap-y-4 bg-[#f6f6f7] rounded-lg pt-4 px-4">
-              {chatMembers.map((member) => (
-                <div className="flex flex-col gap-y-3">
+              {chatMembers.map((m) => (
+                <div className="flex flex-col gap-y-3" key={m._id}>
                   <div className="flex gap-x-3">
                     <img
                       className="w-12 h-12 rounded-full"
-                      src={member?.pic}
+                      src={m?.pic}
                       alt="ava"
+                      loading="lazy"
+                      decoding="async"
                     />
                     <div>
-                      <div>{member?.name}</div>
-                      {member?._id === groupAdmin?._id ? (
+                      <div>{m?.name}</div>
+                      {String(m?._id) === String(groupAdmin?._id) ? (
                         <div className="text-[rgb(127,127,128)]">
                           Group creator
                         </div>
@@ -317,10 +348,10 @@ const ChatInfo = () => {
           </div>
         </div>
       ) : (
-        <div className="flex justify-center ">
-          <div className="font-bold">Email: </div>
-
-          <div className="text-[#3f454b] ml-2"> {email}</div>
+        // 1:1 chat info
+        <div className="flex justify-center">
+          <div className="font-bold">Email:</div>
+          <div className="text-[#3f454b] ml-2">{email}</div>
         </div>
       )}
     </div>
